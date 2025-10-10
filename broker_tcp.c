@@ -114,7 +114,7 @@ static void remove_subscriber_fd(int fd) {
                 SubNode *dead = *pp;
                 *pp = (*pp)->next;
                 free(dead);
-                // no break: podría estar en varias (si más tarde habilitas multi-tema)
+                // no break: podría estar en varias 
             } else {
                 pp = &(*pp)->next;
             }
@@ -277,3 +277,4 @@ int main(int argc, char **argv) {
     close(srv);
     return 0;
 }
+
