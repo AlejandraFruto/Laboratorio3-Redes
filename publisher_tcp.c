@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
     if (send_all(fd, first, (size_t)n) < 0) { perror("send"); close(fd); return 1; }
 
     printf("[publisher] Conectado. Escribe mensajes.\n");
-    printf("  Tip: puedes escribir directamente el texto; yo le antepongo 'MSG '.\n");
+   
 
     char buf[MAX_LINE];
     while (fgets(buf, sizeof(buf), stdin)) {
@@ -83,3 +83,4 @@ int main(int argc, char **argv) {
     close(fd);
     return 0;
 }
+
