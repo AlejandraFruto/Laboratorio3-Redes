@@ -59,7 +59,6 @@ static void add_subscriber(const char *topic_name, const struct sockaddr_in *sub
     for (SubNode *current = t->subs; current != NULL; current = current->next) {
         if (current->addr.sin_addr.s_addr == sub_addr->sin_addr.s_addr &&
             current->addr.sin_port == sub_addr->sin_port) {
-            // Ya está suscrito
             return;
         }
     }
@@ -83,8 +82,14 @@ static void broadcast_to_topic(int sockfd, const char *topic_name, const char *m
     Topic *t = topics;
     while (t) {
         if (strcmp(t->name, topic_name) == 0) {
-            // Enviar a cada suscriptor
             for (SubNode *sub = t->subs; sub; sub = sub->next) {
+                // sendto(): Envía un datagrama UDP al suscriptor.
+                // - sockfd: descriptor de socket UDP del broker.
+                // - msg: buffer con el mensaje a reenviar.
+                // - strlen(msg): tamaño del mensaje.
+                // - 0: sin flags adicionales.
+                // - sub->addr: dirección IP y puerto del suscriptor.
+                // - sizeof(sub->addr): tamaño de la estructura sockaddr_in.
                 sendto(sockfd, msg, strlen(msg), 0, (const struct sockaddr *)&sub->addr, sizeof(sub->addr));
             }
             break;
@@ -100,17 +105,27 @@ int main(int argc, char **argv) {
     }
 
     int port = atoi(argv[1]);
+
+    // socket(): crea un socket UDP
+    // - AF_INET: IPv4
+    // - SOCK_DGRAM: socket de datagramas (UDP)
+    // - 0: protocolo por defecto (UDP)
     int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
         perror("socket");
         return 1;
     }
 
+    // Configurar la dirección local del broker (puerto + IP)
     struct sockaddr_in srv_addr = {0};
     srv_addr.sin_family = AF_INET;
-    srv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    srv_addr.sin_addr.s_addr = htonl(INADDR_ANY); // Escuchar en todas las interfaces
     srv_addr.sin_port = htons((uint16_t)port);
 
+    // bind(): asocia el socket UDP a una dirección IP/puerto
+    // - sockfd: descriptor de socket
+    // - (sockaddr *)&srv_addr: estructura con IP y puerto local
+    // - sizeof(srv_addr): tamaño de la estructura
     if (bind(sockfd, (struct sockaddr *)&srv_addr, sizeof(srv_addr)) < 0) {
         perror("bind");
         close(sockfd);
@@ -124,6 +139,13 @@ int main(int argc, char **argv) {
         struct sockaddr_in cli_addr = {0};
         socklen_t clilen = sizeof(cli_addr);
 
+        // recvfrom(): recibe un datagrama UDP de cualquier cliente (publisher o subscriber)
+        // - sockfd: socket UDP del broker
+        // - buffer: donde se almacena el mensaje recibido
+        // - sizeof(buffer)-1: tamaño máximo permitido
+        // - 0: flags (ninguno)
+        // - (sockaddr *)&cli_addr: almacena la IP/puerto de quien lo envió
+        // - &clilen: tamaño de la estructura anterior
         ssize_t n = recvfrom(sockfd, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *)&cli_addr, &clilen);
         if (n < 0) {
             if (errno == EINTR) continue;
@@ -132,7 +154,7 @@ int main(int argc, char **argv) {
         }
         buffer[n] = '\0'; // Asegurar terminación null
 
-        // Parseo del mensaje
+        // Parsear mensaje entrante
         char role[8] = {0};
         char topic[TOPIC_MAX] = {0};
         sscanf(buffer, "%7s %127s", role, topic);
@@ -141,22 +163,24 @@ int main(int argc, char **argv) {
             add_subscriber(topic, &cli_addr);
 
         } else if (strcmp(role, "PUB") == 0 && topic[0] != '\0') {
-            // El mensaje es todo lo que sigue después de "PUB <tema> "
             const char *msg = buffer + 4 + strlen(topic) + 1;
             if (strlen(msg) > 0) {
                  char pub_ip[INET_ADDRSTRLEN];
                  inet_ntop(AF_INET, &(cli_addr.sin_addr), pub_ip, INET_ADDRSTRLEN);
-                 printf("[broker] Publicación de %s:%d para tema '%s': %s\n", pub_ip, ntohs(cli_addr.sin_port), topic, msg);
+                 printf("[broker] Publicación de %s:%d para tema '%s': %s\n",
+                        pub_ip, ntohs(cli_addr.sin_port), topic, msg);
                  broadcast_to_topic(sockfd, topic, msg);
             }
+
         } else {
-             // Mensaje con formato incorrecto
              char cli_ip[INET_ADDRSTRLEN];
              inet_ntop(AF_INET, &(cli_addr.sin_addr), cli_ip, INET_ADDRSTRLEN);
-             fprintf(stderr, "[broker] Mensaje inválido de %s:%d: %s\n", cli_ip, ntohs(cli_addr.sin_port), buffer);
+             fprintf(stderr, "[broker] Mensaje inválido de %s:%d: %s\n",
+                     cli_ip, ntohs(cli_addr.sin_port), buffer);
         }
     }
 
+    // Cerrar el socket cuando se termine la ejecución
     close(sockfd);
     return 0;
 }
