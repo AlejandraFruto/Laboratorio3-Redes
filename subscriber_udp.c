@@ -1,18 +1,12 @@
-// Subscriber UDP: envía "SUB <tema>" al broker y luego imprime los datagramas que recibe.
-//
-// Compilación: gcc -Wall -Wextra -O2 -o subscriber_udp subscriber_udp.c
-// Uso:         ./subscriber_udp <host> <puerto> "<tema>"
-// Ejemplo:     ./subscriber_udp 127.0.0.1 8080 "Partido_AvsB"
-
-#include <arpa/inet.h>
-#include <errno.h>
-#include <netinet/in.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include <arpa/inet.h>      // Provee funciones para manipular direcciones IP, como inet_pton() que convierte IPs de texto a binario.
+#include <errno.h>          // Permite el manejo de errores a través de la variable 'errno'.
+#include <netinet/in.h>     // Define la estructura 'sockaddr_in' y constantes para sockets de Internet (ej. AF_INET).
+#include <stdbool.h>        // Define el tipo de dato booleano 'bool' y los valores 'true' y 'false'.
+#include <stdio.h>          // Librería estándar de Entrada/Salida para funciones como printf() y fprintf().
+#include <stdlib.h>         // Librería estándar que provee funciones para conversión de tipos (atoi) y salida del programa (exit).
+#include <string.h>         // Provee funciones para la manipulación de cadenas de caracteres, como strlen() y snprintf().
+#include <sys/socket.h>     // Contiene las definiciones principales para la API de sockets, como socket(), sendto() y recvfrom().
+#include <unistd.h>         // Provee acceso a la API del sistema operativo POSIX, incluyendo la función close() para cerrar el socket.
 
 #define MAX_LINE 4096
 
