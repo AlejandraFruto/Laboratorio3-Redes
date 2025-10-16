@@ -17,19 +17,20 @@
 //   - send_all() asegura enviar el buffer completo o reportar error.
 //   - SIGPIPE ignorado para evitar terminar el proceso si un peer cierra.
 
-#define _GNU_SOURCE
-#include <arpa/inet.h>
-#include <errno.h>
-#include <netinet/in.h>
-#include <pthread.h>
-#include <signal.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
+#define _GNU_SOURCE         // Habilita extensiones no estándar de GNU en las librerías, a veces necesario para funciones avanzadas.
+#include <arpa/inet.h>      // Provee funciones para manipular direcciones IP, como inet_ntop() que convierte IPs de binario a texto.
+#include <errno.h>          // Permite el manejo de errores a través de la variable 'errno' y constantes como EINTR.
+#include <netinet/in.h>     // Define la estructura 'sockaddr_in' y constantes necesarias para la programación de sockets de Internet.
+#include <pthread.h>        // Proporciona la API POSIX para manejo de hilos, incluyendo funciones como pthread_create() y pthread_join().
+#include <signal.h>         // Permite manejar señales del sistema como SIGINT o SIGTERM, útil para cerrar procesos de forma controlada.
+#include <stdbool.h>        // Define el tipo de dato booleano 'bool' y los valores 'true' y 'false'.
+#include <stdio.h>          // Librería estándar de Entrada/Salida para funciones como printf(), fprintf() y sscanf().
+#include <stdlib.h>         // Librería estándar que provee funciones de gestión de memoria (calloc, free) y conversión de tipos (atoi).
+#include <string.h>         // Provee funciones para la manipulación de cadenas de caracteres, como strcmp(), strncpy() y strlen().
+#include <sys/socket.h>     // Contiene las definiciones y estructuras principales para la API de sockets (socket(), bind(), sendto(), recvfrom()).
+#include <sys/types.h>      // Define tipos de datos primitivos usados en llamadas al sistema, como ssize_t y socklen_t.
+#include <unistd.h>         // Provee acceso a la API del sistema operativo POSIX, incluyendo la función close() para cerrar descriptores de archivo.
+
 
 #define BACKLOG 128
 #define MAX_LINE 4096
@@ -301,3 +302,4 @@ int main(int argc, char **argv) {
     close(srv);
     return 0;
 }
+
