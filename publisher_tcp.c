@@ -1,7 +1,5 @@
-// publisher_tcp.c
-// Publisher TCP: conecta al broker, envía "PUB <tema>"
-// y luego lee líneas desde stdin. Cada línea debe empezar con "MSG ".
-// Para ayudar, si escribes sin "MSG ", el programa lo añadirá automáticamente.
+// Publisher TCP: conecta al broker, envía "PUB <tema>" y luego publica líneas.
+// Si el usuario no escribe "MSG ", el programa lo antepone automáticamente.
 //
 // Compilación: gcc -Wall -Wextra -O2 -o publisher_tcp publisher_tcp.c
 // Uso:         ./publisher_tcp <host> <puerto> "<tema>"
@@ -19,6 +17,7 @@
 
 #define MAX_LINE 4096
 
+// Envía todo el buffer (maneja envíos parciales e interrupciones).
 static ssize_t send_all(int fd, const void *buf, size_t len) {
     const char *p = (const char *)buf;
     size_t sent = 0;
@@ -43,6 +42,7 @@ int main(int argc, char **argv) {
     int port = atoi(argv[2]);
     const char *topic = argv[3];
 
+    // Crear socket y conectarse al broker.
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) { perror("socket"); return 1; }
 
@@ -58,16 +58,17 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // Anunciar rol/tema al broker.
     char first[MAX_LINE];
     int n = snprintf(first, sizeof(first), "PUB %s\n", topic);
     if (send_all(fd, first, (size_t)n) < 0) { perror("send"); close(fd); return 1; }
 
     printf("[publisher] Conectado. Escribe mensajes.\n");
-   
 
+    // Leer desde stdin y enviar como "MSG <texto>\n".
     char buf[MAX_LINE];
     while (fgets(buf, sizeof(buf), stdin)) {
-        // Quitar '\n'
+        // Quitar '\n' final si viene
         size_t len = strlen(buf);
         if (len && buf[len-1] == '\n') buf[len-1] = '\0';
 
@@ -83,4 +84,3 @@ int main(int argc, char **argv) {
     close(fd);
     return 0;
 }
-

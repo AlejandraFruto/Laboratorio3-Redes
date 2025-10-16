@@ -1,5 +1,6 @@
-// subscriber_tcp.c
-// Suscriptor TCP: permite suscribirse a varios tópicos.
+// Suscriptor TCP: se conecta al broker y puede suscribirse a varios temas.
+// Envia una línea "SUB <tema>" por cada argumento recibido.
+//
 // Compilación: gcc -Wall -Wextra -O2 -o subscriber_tcp subscriber_tcp.c
 // Uso:         ./subscriber_tcp <host> <puerto> <tema1> [<tema2> ...]
 // Ejemplo:     ./subscriber_tcp 127.0.0.1 5555 "Partido_AvsB" "Partido_CvsD"
@@ -16,6 +17,7 @@
 
 #define MAX_LINE 4096
 
+// Lee una línea terminada en '\n'; 1: ok, 0: peer cerró, -1: error.
 static int read_line(int fd, char *out, size_t maxlen) {
     size_t i = 0;
     while (i + 1 < maxlen) {
@@ -36,6 +38,7 @@ static int read_line(int fd, char *out, size_t maxlen) {
     return 1;
 }
 
+// Envío confiable de buffers.
 static ssize_t send_all(int fd, const void *buf, size_t len) {
     const char *p = (const char *)buf;
     size_t sent = 0;
@@ -60,7 +63,7 @@ int main(int argc, char **argv) {
     const char *host = argv[1];
     int port = atoi(argv[2]);
 
-    // Crear socket
+    // Crear socket y conectar al broker.
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) { perror("socket"); return 1; }
 
@@ -72,13 +75,12 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Conectar al broker
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         perror("connect");
         return 1;
     }
 
-    // Enviar múltiples suscripciones
+    // Enviar una línea SUB por cada tema (permite múltiples suscripciones).
     for (int i = 3; i < argc; i++) {
         char first[MAX_LINE];
         int n = snprintf(first, sizeof(first), "SUB %s\n", argv[i]);
@@ -92,12 +94,12 @@ int main(int argc, char **argv) {
 
     printf("[subscriber] Esperando mensajes...\n");
 
-    // Leer mensajes del broker
+    // Bucle de lectura de mensajes reenviados por el broker.
     char line[MAX_LINE];
     while (1) {
         int r = read_line(fd, line, sizeof(line));
-        if (r <= 0) break;
-        printf("[mensaje] %s\n", line);
+        if (r <= 0) break;                 // desconexión o error
+        printf("[mensaje] %s\n", line);    // formato "<tema>: <texto>"
         fflush(stdout);
     }
 

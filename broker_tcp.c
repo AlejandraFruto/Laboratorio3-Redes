@@ -1,6 +1,21 @@
 // Broker TCP para pub/sub simple por temas con múltiples SUB por conexión.
 // Compilación: gcc -Wall -Wextra -O2 -pthread -o broker_tcp broker_tcp.c
 // Ejecución:   ./broker_tcp <puerto>
+//
+// Protocolo (línea inicial por cliente):
+//   SUB <tema>            -> registra el socket como suscriptor del <tema>.
+//   PUB <tema>            -> registra el socket como publicador de <tema>.
+// Publicación (lado publisher):
+//   MSG <texto>           -> el broker reenvía "<tema>: <texto>\n" a todos los SUB del tema.
+//
+// Concurrencia:
+//   - Un hilo por cliente (pthread). Acceso a la lista de temas/suscriptores protegido por mutex.
+//   - Se eliminan suscriptores “muertos” al fallar send().
+//
+// Notas de robustez:
+//   - read_line() lee de a 1 byte hasta '\n' (suficiente para práctica).
+//   - send_all() asegura enviar el buffer completo o reportar error.
+//   - SIGPIPE ignorado para evitar terminar el proceso si un peer cierra.
 
 #define _GNU_SOURCE
 #include <arpa/inet.h>
@@ -20,35 +35,40 @@
 #define MAX_LINE 4096
 #define TOPIC_MAX 128
 
+// Lista enlazada de suscriptores por tema.
 typedef struct SubNode {
-    int fd;
+    int fd;                 // descriptor del cliente suscriptor
     struct SubNode *next;
 } SubNode;
 
+// Nodo de tema con su lista de suscriptores.
 typedef struct Topic {
-    char name[TOPIC_MAX];
-    SubNode *subs;
+    char name[TOPIC_MAX];   // nombre del tema
+    SubNode *subs;          // cabeza de la lista de suscriptores
     struct Topic *next;
 } Topic;
 
-static Topic *topics = NULL;
-static pthread_mutex_t topics_mtx = PTHREAD_MUTEX_INITIALIZER;
+static Topic *topics = NULL;                               // lista global de temas
+static pthread_mutex_t topics_mtx = PTHREAD_MUTEX_INITIALIZER; // protege 'topics'
 
+// Envío confiable de 'len' bytes (maneja señales y envíos parciales).
 static ssize_t send_all(int fd, const void *buf, size_t len) {
     const char *p = (const char *)buf;
     size_t sent = 0;
     while (sent < len) {
         ssize_t n = send(fd, p + sent, len - sent, 0);
         if (n < 0) {
-            if (errno == EINTR) continue;
-            return -1;
+            if (errno == EINTR) continue; // reintentar si fue interrumpido
+            return -1;                    // error duro
         }
-        if (n == 0) return 0;
+        if (n == 0) return 0;             // peer cerró
         sent += (size_t)n;
     }
     return (ssize_t)sent;
 }
 
+// Lee una línea terminada en '\n' (estilo simple). Devuelve:
+//  1 si obtuvo línea, 0 si conexión cerrada, -1 en error.
 static int read_line(int fd, char *out, size_t maxlen) {
     size_t i = 0;
     while (i + 1 < maxlen) {
@@ -69,13 +89,15 @@ static int read_line(int fd, char *out, size_t maxlen) {
     return 1;
 }
 
+// Busca un tema por nombre o lo crea si no existe.
+// PRE: se llama con el mutex tomado.
 static Topic *find_or_create_topic(const char *name) {
     Topic *t = topics;
     while (t) {
         if (strcmp(t->name, name) == 0) return t;
         t = t->next;
     }
-    // crear
+    // crear nuevo tema al vuelo
     Topic *nt = (Topic *)calloc(1, sizeof(Topic));
     if (!nt) return NULL;
     strncpy(nt->name, name, TOPIC_MAX - 1);
@@ -85,15 +107,15 @@ static Topic *find_or_create_topic(const char *name) {
     return nt;
 }
 
+// Agrega un suscriptor (evita duplicados por fd).
 static void add_subscriber(const char *topic, int fd) {
     pthread_mutex_lock(&topics_mtx);
     Topic *t = find_or_create_topic(topic);
     if (t) {
-        // evitar duplicados
         for (SubNode *n = t->subs; n; n = n->next) {
             if (n->fd == fd) {
                 pthread_mutex_unlock(&topics_mtx);
-                return; // ya estaba suscrito
+                return; // ya estaba suscrito a ese tema
             }
         }
         SubNode *node = (SubNode *)calloc(1, sizeof(SubNode));
@@ -104,6 +126,7 @@ static void add_subscriber(const char *topic, int fd) {
     pthread_mutex_unlock(&topics_mtx);
 }
 
+// Elimina un fd de todas las listas de suscriptores (cuando un cliente se va).
 static void remove_subscriber_fd(int fd) {
     pthread_mutex_lock(&topics_mtx);
     for (Topic *t = topics; t; t = t->next) {
@@ -121,6 +144,8 @@ static void remove_subscriber_fd(int fd) {
     pthread_mutex_unlock(&topics_mtx);
 }
 
+// Reenvía 'msg' a todos los suscriptores del 'topic'.
+// Si un envío falla, se asume desconexión y se remueve el suscriptor.
 static void broadcast_to_topic(const char *topic, const char *msg) {
     pthread_mutex_lock(&topics_mtx);
     for (Topic *t = topics; t; t = t->next) {
@@ -133,6 +158,7 @@ static void broadcast_to_topic(const char *topic, const char *msg) {
                 if (n < 0) { pp = &(*pp)->next; continue; }
 
                 if (send_all(fd, line, (size_t)n) < 0) {
+                    // desconexión: limpiar nodo
                     SubNode *dead = *pp;
                     *pp = (*pp)->next;
                     close(fd);
@@ -147,11 +173,13 @@ static void broadcast_to_topic(const char *topic, const char *msg) {
     pthread_mutex_unlock(&topics_mtx);
 }
 
+// Info por cliente para el hilo.
 typedef struct {
     int fd;
     struct sockaddr_in addr;
 } ClientInfo;
 
+// Hilo por cliente: decide rol (SUB|PUB) y ejecuta bucle correspondiente.
 static void *client_thread(void *arg) {
     ClientInfo *ci = (ClientInfo *)arg;
     int fd = ci->fd;
@@ -161,7 +189,7 @@ static void *client_thread(void *arg) {
     char role[8] = {0};
     char topic[TOPIC_MAX] = {0};
 
-    // 1) Leer la primera línea para determinar el rol
+    // 1) Leer la primera línea para determinar el rol y el tema.
     if (read_line(fd, line, sizeof(line)) <= 0) {
         close(fd);
         return NULL;
@@ -174,16 +202,15 @@ static void *client_thread(void *arg) {
     }
 
     if (strcmp(role, "SUB") == 0) {
-        // 🔸 Primer SUB
+        // Suscripción inicial
         add_subscriber(topic, fd);
         printf("[broker] Cliente %d suscrito a '%s'\n", fd, topic);
 
-        // 🔸 Permitir múltiples SUB adicionales en la misma conexión
+        // Acepta múltiples SUB en la misma conexión.
         while (true) {
             int r = read_line(fd, line, sizeof(line));
             if (r <= 0) break;
 
-            // Si recibe otra orden SUB <tema_nuevo>
             char cmd[8] = {0};
             char new_topic[TOPIC_MAX] = {0};
             if (sscanf(line, "%7s %127s", cmd, new_topic) == 2 && strcmp(cmd, "SUB") == 0) {
@@ -191,16 +218,16 @@ static void *client_thread(void *arg) {
                 printf("[broker] Cliente %d suscrito a '%s'\n", fd, new_topic);
                 continue;
             }
-
-            // Si no es SUB, ignoramos (suscriptores no deberían mandar otra cosa)
+            // Otras líneas de un SUB se ignoran.
         }
 
+        // Limpieza al salir.
         remove_subscriber_fd(fd);
         close(fd);
         return NULL;
 
     } else if (strcmp(role, "PUB") == 0) {
-        // Publisher: bucle de mensajes
+        // Bucle de publicación: solo acepta "MSG <texto>"
         while (true) {
             int r = read_line(fd, line, sizeof(line));
             if (r <= 0) break;
@@ -228,7 +255,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Uso: %s <puerto>\n", argv[0]);
         return 1;
     }
-    signal(SIGPIPE, SIG_IGN);
+    signal(SIGPIPE, SIG_IGN); // evitar terminación por escritura a socket cerrado
 
     int port = atoi(argv[1]);
     int srv = socket(AF_INET, SOCK_STREAM, 0);
@@ -253,6 +280,7 @@ int main(int argc, char **argv) {
 
     printf("[broker] Escuchando en puerto %d ...\n", port);
 
+    // Bucle principal: aceptar clientes y lanzar hilo.
     while (1) {
         struct sockaddr_in cli = {0};
         socklen_t clilen = sizeof(cli);
@@ -267,7 +295,7 @@ int main(int argc, char **argv) {
 
         pthread_t th;
         pthread_create(&th, NULL, client_thread, ci);
-        pthread_detach(th);
+        pthread_detach(th); // no join; limpiará el SO al terminar
     }
 
     close(srv);
