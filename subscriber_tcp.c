@@ -1,10 +1,8 @@
 // subscriber_tcp.c
-// Subscriber TCP: conecta al broker, envía "SUB <tema>"
-// y luego imprime líneas recibidas.
-//
+// Suscriptor TCP: permite suscribirse a varios tópicos.
 // Compilación: gcc -Wall -Wextra -O2 -o subscriber_tcp subscriber_tcp.c
-// Uso:         ./subscriber_tcp <host> <puerto> "<tema>"
-// Ejemplo:     ./subscriber_tcp 127.0.0.1 5555 "Partido_AvsB"
+// Uso:         ./subscriber_tcp <host> <puerto> <tema1> [<tema2> ...]
+// Ejemplo:     ./subscriber_tcp 127.0.0.1 5555 "Partido_AvsB" "Partido_CvsD"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -54,14 +52,15 @@ static ssize_t send_all(int fd, const void *buf, size_t len) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 4) {
-        fprintf(stderr, "Uso: %s <host> <puerto> <tema>\n", argv[0]);
+    if (argc < 4) {
+        fprintf(stderr, "Uso: %s <host> <puerto> <tema1> [<tema2> ...]\n", argv[0]);
         return 1;
     }
+
     const char *host = argv[1];
     int port = atoi(argv[2]);
-    const char *topic = argv[3];
 
+    // Crear socket
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) { perror("socket"); return 1; }
 
@@ -72,17 +71,28 @@ int main(int argc, char **argv) {
         perror("inet_pton");
         return 1;
     }
+
+    // Conectar al broker
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         perror("connect");
         return 1;
     }
 
-    char first[MAX_LINE];
-    int n = snprintf(first, sizeof(first), "SUB %s\n", topic);
-    if (send_all(fd, first, (size_t)n) < 0) { perror("send"); close(fd); return 1; }
+    // Enviar múltiples suscripciones
+    for (int i = 3; i < argc; i++) {
+        char first[MAX_LINE];
+        int n = snprintf(first, sizeof(first), "SUB %s\n", argv[i]);
+        if (send_all(fd, first, (size_t)n) < 0) {
+            perror("send");
+            close(fd);
+            return 1;
+        }
+        printf("[subscriber] Suscrito a '%s'\n", argv[i]);
+    }
 
-    printf("[subscriber] Suscrito a '%s'. Esperando mensajes...\n", topic);
+    printf("[subscriber] Esperando mensajes...\n");
 
+    // Leer mensajes del broker
     char line[MAX_LINE];
     while (1) {
         int r = read_line(fd, line, sizeof(line));
