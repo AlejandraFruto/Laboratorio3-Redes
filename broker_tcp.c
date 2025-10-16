@@ -1,12 +1,4 @@
-// broker_tcp.c
-// Broker TCP para pub/sub simple por temas.
-// Protocolo (línea inicial por cliente):
-//   - "SUB <tema>\n" -> registra subscriber en <tema>
-//   - "PUB <tema>\n" -> registra publisher para <tema>
-// Publicación:
-//   - Publisher envía líneas: "MSG <texto...>\n"
-//   - Broker reenvía <texto...> a todos los subscribers del <tema>
-//
+// Broker TCP para pub/sub simple por temas con múltiples SUB por conexión.
 // Compilación: gcc -Wall -Wextra -O2 -pthread -o broker_tcp broker_tcp.c
 // Ejecución:   ./broker_tcp <puerto>
 
@@ -97,6 +89,13 @@ static void add_subscriber(const char *topic, int fd) {
     pthread_mutex_lock(&topics_mtx);
     Topic *t = find_or_create_topic(topic);
     if (t) {
+        // evitar duplicados
+        for (SubNode *n = t->subs; n; n = n->next) {
+            if (n->fd == fd) {
+                pthread_mutex_unlock(&topics_mtx);
+                return; // ya estaba suscrito
+            }
+        }
         SubNode *node = (SubNode *)calloc(1, sizeof(SubNode));
         node->fd = fd;
         node->next = t->subs;
@@ -114,7 +113,6 @@ static void remove_subscriber_fd(int fd) {
                 SubNode *dead = *pp;
                 *pp = (*pp)->next;
                 free(dead);
-                // no break: podría estar en varias 
             } else {
                 pp = &(*pp)->next;
             }
@@ -127,16 +125,14 @@ static void broadcast_to_topic(const char *topic, const char *msg) {
     pthread_mutex_lock(&topics_mtx);
     for (Topic *t = topics; t; t = t->next) {
         if (strcmp(t->name, topic) == 0) {
-            // mandamos a cada subscriber; si falla, lo eliminamos
             SubNode **pp = &t->subs;
             while (*pp) {
                 int fd = (*pp)->fd;
                 char line[MAX_LINE];
-                int n = snprintf(line, sizeof(line), "%s\n", msg);
+                int n = snprintf(line, sizeof(line), "%s: %s\n", topic, msg);
                 if (n < 0) { pp = &(*pp)->next; continue; }
 
                 if (send_all(fd, line, (size_t)n) < 0) {
-                    // eliminar sub muerto
                     SubNode *dead = *pp;
                     *pp = (*pp)->next;
                     close(fd);
@@ -165,12 +161,11 @@ static void *client_thread(void *arg) {
     char role[8] = {0};
     char topic[TOPIC_MAX] = {0};
 
-    // 1) Leer línea inicial: "SUB <tema>" o "PUB <tema>"
+    // 1) Leer la primera línea para determinar el rol
     if (read_line(fd, line, sizeof(line)) <= 0) {
         close(fd);
         return NULL;
     }
-    // parsing sencillo
     if (sscanf(line, "%7s %127s", role, topic) != 2) {
         const char *err = "ERR protocolo: use 'SUB <tema>' o 'PUB <tema>'\n";
         send_all(fd, err, strlen(err));
@@ -179,39 +174,40 @@ static void *client_thread(void *arg) {
     }
 
     if (strcmp(role, "SUB") == 0) {
+        // 🔸 Primer SUB
         add_subscriber(topic, fd);
-        // Suscriptor solo recibe. Mantener la conexión viva hasta que cierre.
-        // Si el cliente manda algo inesperado, lo ignoramos.
+        printf("[broker] Cliente %d suscrito a '%s'\n", fd, topic);
+
+        // 🔸 Permitir múltiples SUB adicionales en la misma conexión
         while (true) {
-            // Para detectar cierre remoto:
-            ssize_t n = recv(fd, line, sizeof(line), MSG_DONTWAIT);
-            if (n == 0) break;          // cerrado limpiamente
-            if (n < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    // nada que leer; dormir cortito
-                    usleep(100000);
-                    continue;
-                } else {
-                    break;              // error real
-                }
+            int r = read_line(fd, line, sizeof(line));
+            if (r <= 0) break;
+
+            // Si recibe otra orden SUB <tema_nuevo>
+            char cmd[8] = {0};
+            char new_topic[TOPIC_MAX] = {0};
+            if (sscanf(line, "%7s %127s", cmd, new_topic) == 2 && strcmp(cmd, "SUB") == 0) {
+                add_subscriber(new_topic, fd);
+                printf("[broker] Cliente %d suscrito a '%s'\n", fd, new_topic);
+                continue;
             }
-            // ignorar datos entrantes
+
+            // Si no es SUB, ignoramos (suscriptores no deberían mandar otra cosa)
         }
+
         remove_subscriber_fd(fd);
         close(fd);
         return NULL;
 
     } else if (strcmp(role, "PUB") == 0) {
-        // Publisher: leer bucle de mensajes "MSG <texto...>"
+        // Publisher: bucle de mensajes
         while (true) {
             int r = read_line(fd, line, sizeof(line));
-            if (r <= 0) break; // cerrado o error
+            if (r <= 0) break;
             if (strncmp(line, "MSG ", 4) == 0) {
                 const char *payload = line + 4;
-                // Reenvía SOLO el payload a los subs del tema
                 broadcast_to_topic(topic, payload);
             } else {
-                // protocolo inválido pero mantenemos la conexión por tolerancia
                 const char *warn = "WARN: use 'MSG <texto>'\n";
                 if (send_all(fd, warn, strlen(warn)) < 0) break;
             }
@@ -232,7 +228,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Uso: %s <puerto>\n", argv[0]);
         return 1;
     }
-    signal(SIGPIPE, SIG_IGN); // evita terminar por enviar a socket cerrado
+    signal(SIGPIPE, SIG_IGN);
 
     int port = atoi(argv[1]);
     int srv = socket(AF_INET, SOCK_STREAM, 0);
@@ -277,4 +273,3 @@ int main(int argc, char **argv) {
     close(srv);
     return 0;
 }
-
