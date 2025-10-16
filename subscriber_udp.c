@@ -11,13 +11,13 @@
 #define MAX_LINE 4096
 
 int main(int argc, char **argv) {
-    if (argc != 4) {
-        fprintf(stderr, "Uso: %s <host> <puerto> <tema>\n", argv[0]);
+    if (argc < 4) {
+        fprintf(stderr, "Uso: %s <host> <puerto> <tema1> [<tema2> ...]\n", argv[0]);
         return 1;
     }
+
     const char *host = argv[1];
     int port = atoi(argv[2]);
-    const char *topic = argv[3];
 
     // Crear socket UDP
     int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -36,29 +36,51 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Enviar el mensaje de suscripción
-    char sub_message[MAX_LINE];
-    int n = snprintf(sub_message, sizeof(sub_message), "SUB %s", topic);
-    if (sendto(sockfd, sub_message, (size_t)n, 0,
-               (const struct sockaddr *)&broker_addr, sizeof(broker_addr)) < 0) {
-        perror("sendto: no se pudo enviar la suscripción");
-        close(sockfd);
-        return 1;
+    // Enviar solicitudes de suscripción para cada tópico recibido por línea de comandos
+    for (int i = 3; i < argc; i++) {
+        char sub_message[MAX_LINE];
+        // snprintf() construye el comando SUB de forma segura
+        int n = snprintf(sub_message, sizeof(sub_message), "SUB %s", argv[i]);
+
+        // sendto() envía un datagrama UDP al broker
+        // - sockfd: descriptor del socket UDP
+        // - sub_message: buffer con el mensaje SUB
+        // - n: longitud del mensaje
+        // - 0: flags (no se usan)
+        // - broker_addr: dirección del broker
+        // - sizeof(): tamaño de la estructura sockaddr_in
+        if (sendto(sockfd, sub_message, (size_t)n, 0,
+                   (const struct sockaddr *)&broker_addr, sizeof(broker_addr)) < 0) {
+            perror("sendto: no se pudo enviar la suscripción");
+            close(sockfd);
+            return 1;
+        }
+
+        // Notificamos al usuario que se envió la suscripción a cada tema
+        printf("[subscriber] Solicitud de suscripción enviada para '%s'.\n", argv[i]);
     }
 
-    printf("[subscriber] Solicitud de suscripción enviada para '%s'. Esperando mensajes... 📡\n", topic);
+    printf("[subscriber] Esperando mensajes... 📡\n");
 
     // Bucle para recibir mensajes del broker
     char buffer[MAX_LINE];
     while (1) {
+        // recvfrom() bloquea hasta que llega un datagrama UDP
+        // - sockfd: socket por el que recibimos
+        // - buffer: lugar donde se almacenará el mensaje
+        // - sizeof(buffer)-1: tamaño máximo de recepción
+        // - 0: flags
+        // - NULL,NULL: no necesitamos saber quién lo envió (el broker siempre es el mismo)
         ssize_t n_bytes = recvfrom(sockfd, buffer, sizeof(buffer) - 1, 0, NULL, NULL);
         if (n_bytes < 0) {
             perror("recvfrom");
             break; // Salir en caso de error
         }
+
         buffer[n_bytes] = '\0'; // Asegurar terminación null
 
         // Imprimir el mensaje recibido
+        // El broker debe incluir el nombre del tema al principio del mensaje
         printf("🔔 [mensaje] %s\n", buffer);
         fflush(stdout); // Asegurar que el mensaje se imprima inmediatamente
     }
